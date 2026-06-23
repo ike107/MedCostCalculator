@@ -141,33 +141,46 @@ def allocate_indirect_costs(df, dfs_dict):
     cost_master = dfs_dict['部署別費用マスタ'].copy()
     base_master = dfs_dict['配賦基準マスタ'].copy() if '配賦基準マスタ' in dfs_dict else None
     
-    df["allocated_cost_internal"] = 0.0
+    # 【追加】費用マスタの「部門区分」と「部署コード」を組み合わせてユニークなカラム名を作成
+    # 例: "診療科_01", "病棟_B01", "中央診療_3101", "その他_9999"
+    cost_master["allocation_col_name"] = cost_master["部門区分"] + "_" + cost_master["部署コード"].astype(str).str.strip()
+    unique_allocation_cols = cost_master["allocation_col_name"].unique().tolist()
+
+    # 【追加】Fファイル（df）に、全部署分の配賦内訳カラムを一括で初期化 (初期値 0.0)
+    for col in unique_allocation_cols:
+        df[col] = 0.0
     
-    with st.spinner("間接費用の配賦（按分）計算を実行中..."):
+    with st.spinner("間接費用の配賦（按分）内訳計算を実行中..."):
         # ① 診療科部門 の配賦
         dept1_costs = cost_master[cost_master["部門区分"] == "診療科"]
         for _, row in dept1_costs.iterrows():
             code = row["部署コード"]
             cost = row["費用"]
+            current_alloc_col = row["allocation_col_name"] # この部署専用のカラム名
             if cost == 0: continue
+            
             mask = (df["延べ患者カウント対象フラグ"] == True) & (df["診療科区分"] == code)
             denominator = mask.sum()
             if denominator > 0:
-                df.loc[mask, "allocated_cost_internal"] += (cost / denominator)
+                # 【修正】全体の共通列ではなく、この部署専用の内訳列に加算
+                df.loc[mask, current_alloc_col] += (cost / denominator)
                 
         # ② 病棟部門 の配賦
         dept2_costs = cost_master[cost_master["部門区分"] == "病棟"]
         for _, row in dept2_costs.iterrows():
             code = row["部署コード"]
             cost = row["費用"]
+            current_alloc_col = row["allocation_col_name"]
             if cost == 0: continue
+            
             actual_ward_code = code[1:] if code.startswith('B') else code
             mask = (df["延べ患者カウント対象フラグ"] == True) & (df["病棟コード"] == actual_ward_code)
             denominator = mask.sum()
             if denominator > 0:
-                df.loc[mask, "allocated_cost_internal"] += (cost / denominator)
+                # 【修正】この部署専用の内訳列に加算
+                df.loc[mask, current_alloc_col] += (cost / denominator)
 
-       # ③ 中央診療部門 の配賦
+        # ③ 中央診療部門 の配賦
         dept3_costs = cost_master[cost_master["部門区分"] == "中央診療"]
         if len(dept3_costs) > 0 and base_master is not None:
             points = pd.to_numeric(df["行為明細点数"], errors='coerce').fillna(0.0)
@@ -186,6 +199,7 @@ def allocate_indirect_costs(df, dfs_dict):
                 code = row["部署コード"]
                 cost = row["費用"]
                 name = row["部署名"]
+                current_alloc_col = row["allocation_col_name"]
                 if cost == 0: continue
                 
                 target_leces = target_lece_dict.get(code, [])
@@ -196,7 +210,8 @@ def allocate_indirect_costs(df, dfs_dict):
                 
                 if denominator > 0:
                     allocation_ratio = cost / denominator
-                    df.loc[mask, "allocated_cost_internal"] += (df.loc[mask, "temp_base_amount"] * allocation_ratio)
+                    # 【修正】この部署専用の内訳列に傾斜配賦した金額を加算
+                    df.loc[mask, current_alloc_col] += (df.loc[mask, "temp_base_amount"] * allocation_ratio)
                 else:
                     st.sidebar.error(f"⚠️ {name} ({code}) の分母が0のため配賦できません。")
             
@@ -204,13 +219,26 @@ def allocate_indirect_costs(df, dfs_dict):
 
         # ④ その他部門 の配賦
         dept4_costs = cost_master[cost_master["部門区分"] == "その他"]
-        total_other_cost = dept4_costs["費用"].sum()
-        if total_other_cost > 0:
+        for _, row in dept4_costs.iterrows():
+            code = row["部署コード"]
+            cost = row["費用"]
+            current_alloc_col = row["allocation_col_name"]
+            if cost == 0: continue
+            
             mask = (df["延べ患者カウント対象フラグ"] == True)
             denominator = mask.sum()
             if denominator > 0:
-                df.loc[mask, "allocated_cost_internal"] += (total_other_cost / denominator)
+                # 【修正】「その他」も部署ごとに個別の内訳列へ加算（複数ある場合に対応）
+                df.loc[mask, current_alloc_col] += (cost / denominator)
 
-    df["配賦間接費"] = df["allocated_cost_internal"].round().astype(int)
-    df = df.drop(columns=["allocated_cost_internal"])
+    # -----------------------------------------------------------------
+    # 【追加】最終処理：全部署カラムの値を四捨五入して、横合計を「配賦間接費」とする
+    # -----------------------------------------------------------------
+    # 各部署ごとの配賦額を1円単位に整数化（端数処理のブレを防止）
+    for col in unique_allocation_cols:
+        df[col] = df[col].round().astype(int)
+
+    # 最終的な「配賦間接費」列は、作成した部署別カラムの横合計とする
+    df["配賦間接費"] = df[unique_allocation_cols].sum(axis=1)
+    
     return df
