@@ -74,7 +74,7 @@ def calculate_direct_costs(def_df, dfs_dict):
         merged_df["償還価格"] = merged_df["償還価格"].fillna(0.0)
         merged_df["マスタ区分"] = merged_df["マスタ区分"].fillna("マスタ外（その他）")
         
-        f_use = pd.to_numeric(merged_df["ใช้量" if "ใช้量" in merged_df.columns else "使用量"], errors='coerce').fillna(0.0)
+        f_use = pd.to_numeric(merged_df["使用量" if "使用量" in merged_df.columns else "使用量"], errors='coerce').fillna(0.0)
         e_times = pd.to_numeric(merged_df["行為回数"], errors='coerce').fillna(0.0)
         merged_df["消費量"] = f_use * e_times
 
